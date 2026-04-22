@@ -2,20 +2,26 @@ import json
 from state import AgentState
 from utils import llm, log_print
 
-SECTION_SYSTEM = """You are a sharp news analyst.
-Write a concise, factual section summary:
-- First line: a bold sub-heading (4–7 words).
-- 3–5 bullet points of specific facts/numbers.
+# ── Token Optimized: Concise Summarizer ──────────────────────
+
+SECTION_SYSTEM = """Summarize this cluster concisely:
+- Bold sub-heading (4-7 words)
+- 2-3 bullet points with specific facts
+
 Format:
 **<Sub-heading>**
-• <fact>
-"""
+• <fact>"""
 
 def _summarize_one_cluster(topic: str, label: str, articles: list[dict]) -> str:
-    block = f"Cluster theme: {label}\nMain topic: {topic}\n\n"
+    """Summarize a cluster of articles (token-optimized)."""
+    # Limit to first 5 articles to reduce tokens
+    articles = articles[:5]
+    
+    block = f"Theme: {label}\nTopic: {topic}\n\nArticles:\n"
     for a in articles:
-        block += f"SOURCE: {a['source']}\nTITLE: {a['title']}\nSUMMARY: {a['description']}\n\n"
-    return llm(SECTION_SYSTEM, block, max_tokens=600)
+        block += f"- {a['title']}: {a.get('description', '')[:100]}\n"
+    
+    return llm(SECTION_SYSTEM, block, max_tokens=300)  # Reduced from 600
 
 def summarize_clusters_node(state: AgentState) -> AgentState:
     clusters = state.get("clusters", [])
