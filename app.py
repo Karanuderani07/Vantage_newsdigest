@@ -13,8 +13,17 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── 2. Load Environment ───────────────────────────────────────
+# ── 2. Load Environment & Keys ─────────────────────────────────
 load_dotenv()
+
+def get_key(name):
+    try:
+        return st.secrets[name]   # Streamlit Cloud
+    except Exception:
+        return os.getenv(name)    # Local fallback
+
+GROQ_KEY = get_key("GROQ_API_KEY")
+NEWS_KEY = get_key("NEWS_API_KEY")
 
 # ── 3. Imports ───────────────────────────────────────────────
 from main import run, build_graph
@@ -291,10 +300,12 @@ st.markdown("<br><br>", unsafe_allow_html=True)
 
 # ── 7. Detailed Pipeline Execution ────────────────────────────
 if generate and topic.strip():
-    if "state" in st.session_state: del st.session_state["state"]
+    if "state" in st.session_state: 
+        del st.session_state["state"]
 
-    GROQ_KEY = os.getenv("GROQ_API_KEY")
-    NEWS_KEY = os.getenv("NEWS_API_KEY")
+    if not GROQ_KEY or not NEWS_KEY:
+        st.error("Protocol Error: Access Keys Missing.")
+        st.stop()
 
     if not GROQ_KEY or not NEWS_KEY:
         st.error("Protocol Error: Access Keys Missing.")
