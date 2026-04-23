@@ -1,9 +1,8 @@
 """
 nodes/fetch_news.py — Node 1
 Planner + Fetcher combined:
-  1. LLM breaks the topic into 4 targeted search queries.
+  1. LLM breaks the topic into 6 targeted search queries (broader coverage).
   2. GNews API fetches up to 10 articles per query.
-     (GNews works from cloud servers unlike NewsAPI free tier)
   3. Deduplication so we don't pass redundant articles downstream.
 """
 
@@ -20,29 +19,35 @@ GNEWS_API_URL = "https://gnews.io/api/v4/search"
 # ── helpers ──────────────────────────────────────────────────
 
 def _plan_queries(topic: str) -> list[str]:
-    """Ask the LLM for 4 search angles on the topic."""
+    """Ask the LLM for 6 short search queries for maximum coverage."""
     system = (
         "You are a senior news research strategist. "
-        "Given a topic, produce exactly 4 short search queries. "
-        "IMPORTANT: Keep queries broad enough to find results in general news outlets. "
-        "Avoid overly academic or specific technical jargon unless essential. "
-        "Coverage: policy, economy, tech advancements, and social impact. "
+        "Given a topic, produce exactly 6 short search queries to maximize news coverage. "
+        "Mix broad AND specific queries. Include:\n"
+        "  1. The topic as-is (broad, 2-3 words)\n"
+        "  2. Policy or regulation angle\n"
+        "  3. Economy or market angle\n"
+        "  4. Technology or innovation angle\n"
+        "  5. A major country or company involved\n"
+        "  6. A recent development or trend\n"
+        "CRITICAL: Keep queries SHORT (2-4 words max). "
+        "Shorter queries return far more results than long ones. "
         "Return ONLY valid JSON:\n"
-        '{"queries": ["q1", "q2", "q3", "q4"]}'
+        '{"queries": ["q1", "q2", "q3", "q4", "q5", "q6"]}'
     )
     raw = llm(system, f"Topic: {topic}", json_mode=True)
-    queries = json.loads(raw).get("queries", [topic])[:4]
+    queries = json.loads(raw).get("queries", [topic])[:6]
     return queries
 
 
 def _fetch_for_query(query: str, api_key: str, max_results: int = 10) -> list[dict]:
     """Call GNews API for a single query."""
     params = {
-        "q":        query,
-        "lang":     "en",
-        "max":      max_results,
-        "sortby":   "relevance",
-        "token":    api_key,
+        "q":      query,
+        "lang":   "en",
+        "max":    max_results,   # GNews free tier cap is 10
+        "sortby": "relevance",
+        "token":  api_key,
     }
 
     try:
@@ -53,7 +58,7 @@ def _fetch_for_query(query: str, api_key: str, max_results: int = 10) -> list[di
             return []
 
         if r.status_code == 429:
-            log_print("⚠  GNews: Rate limit hit, waiting 5s...")
+            log_print("⚠  GNews: Rate limit — waiting 5s then retrying...")
             time.sleep(5)
             r = requests.get(GNEWS_API_URL, params=params, timeout=10)
 
@@ -74,6 +79,7 @@ def _fetch_for_query(query: str, api_key: str, max_results: int = 10) -> list[di
             for a in data.get("articles", [])
             if a.get("title") and "[Removed]" not in a.get("title", "")
         ]
+        log_print(f"  → '{query}' returned {len(articles)} articles")
         return articles
 
     except requests.RequestException as e:
@@ -94,11 +100,6 @@ def _deduplicate(articles: list[dict]) -> list[dict]:
 # ── node ─────────────────────────────────────────────────────
 
 def fetch_news_node(state: AgentState, news_api_key: str) -> AgentState:
-    """
-    LangGraph node.
-    Expands the topic into queries, fetches articles, deduplicates.
-    Returns updated state with `plan` and `raw_articles` filled.
-    """
     topic = state["topic"]
     log_print(f"Planning queries for: '{topic}'")
 
@@ -109,15 +110,14 @@ def fetch_news_node(state: AgentState, news_api_key: str) -> AgentState:
 
     all_articles: list[dict] = []
     for i, q in enumerate(queries):
-        log_print(f"Fetching: '{q}' ({i+1}/{len(queries)})")
+        log_print(f"Fetching ({i+1}/{len(queries)}): '{q}'")
         articles = _fetch_for_query(q, news_api_key)
         all_articles.extend(articles)
-        log_print(f"  → {len(articles)} articles found")
         if i < len(queries) - 1:
-            time.sleep(1)   # light throttle between queries
+            time.sleep(1)  # light throttle between requests
 
     unique = _deduplicate(all_articles)
-    print(f"\n  Fetched {len(all_articles)} articles → {len(unique)} unique after dedup")
+    print(f"\n  Fetched {len(all_articles)} total → {len(unique)} unique after dedup")
 
     return {
         **state,
@@ -125,6 +125,6 @@ def fetch_news_node(state: AgentState, news_api_key: str) -> AgentState:
         "raw_articles": unique,
         "logs": [
             f"Planner → {queries}",
-            f"Fetcher → {len(unique)} unique articles",
+            f"Fetcher → {len(unique)} unique articles from {len(queries)} queries",
         ],
     }
