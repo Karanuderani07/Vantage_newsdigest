@@ -2,19 +2,19 @@
 nodes/fetch_news.py — Node 1
 Planner + Fetcher combined:
   1. LLM breaks the topic into 4 targeted search queries.
-  2. NewsAPI fetches up to 6 articles per query.
+  2. GNews API fetches up to 10 articles per query.
+     (GNews works from cloud servers unlike NewsAPI free tier)
   3. Deduplication so we don't pass redundant articles downstream.
 """
 
 import json
 import time
 import requests
-from datetime import datetime
 from state import AgentState
-from utils import llm, log_print, stamp
+from utils import llm, log_print
 
 
-NEWS_API_URL = "https://newsapi.org/v2/everything"
+GNEWS_API_URL = "https://gnews.io/api/v4/search"
 
 
 # ── helpers ──────────────────────────────────────────────────
@@ -35,64 +35,51 @@ def _plan_queries(topic: str) -> list[str]:
     return queries
 
 
-def _fetch_for_query(query: str, api_key: str, page_size: int = 8, max_retries: int = 3) -> list[dict]:
-    """Call NewsAPI for a single query with exponential backoff retry logic."""
+def _fetch_for_query(query: str, api_key: str, max_results: int = 10) -> list[dict]:
+    """Call GNews API for a single query."""
     params = {
-        "q":            query,
-        "sortBy":       "relevancy",
-        "pageSize":     page_size,
-        "language":     "en",
-        "apiKey":       api_key,
+        "q":        query,
+        "lang":     "en",
+        "max":      max_results,
+        "sortby":   "relevance",
+        "token":    api_key,
     }
-    
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    
-    for attempt in range(max_retries):
-        try:
-            r = requests.get(NEWS_API_URL, params=params, headers=headers, timeout=10)
-            
-            # Handle 429 (rate limit) with exponential backoff
-            if r.status_code == 429:
-                if attempt < max_retries - 1:
-                    backoff = 2 ** attempt  # 1s, 2s, 4s
-                    log_print(f"⚠  Rate limit hit. Backing off {backoff}s before retry {attempt + 1}/{max_retries}...")
-                    time.sleep(backoff)
-                    continue
-                else:
-                    log_print(f"⚠  Rate limit hit after {max_retries} retries. Skipping '{query}'")
-                    return []
-            
-            # Check for other errors
-            if r.status_code != 200:
-                log_print(f"⚠  NewsAPI error (HTTP {r.status_code}): {r.text[:200]}")
-                return []
-            
-            r.raise_for_status()
-            data = r.json()
-            
-            if data.get("status") == "ok":
-                articles = [
-                    {
-                        "title":       a.get("title", "").strip(),
-                        "description": (a.get("description") or "").strip(),
-                        "content":     (a.get("content") or "")[:600].strip(),
-                        "source":      a.get("source", {}).get("name", "Unknown"),
-                        "url":         a.get("url", ""),
-                        "published":   a.get("publishedAt", ""),
-                    }
-                    for a in data.get("articles", [])
-                    if a.get("title") and "[Removed]" not in a.get("title", "")
-                ]
-                return articles
-            else:
-                log_print(f"⚠  NewsAPI error: {data.get('message', 'unknown')}")
-                return []
-                
-        except requests.RequestException as e:
-            log_print(f"⚠  Network error fetching '{query}': {e}")
+
+    try:
+        r = requests.get(GNEWS_API_URL, params=params, timeout=10)
+
+        if r.status_code == 403:
+            log_print("⚠  GNews: Invalid API key or quota exceeded.")
             return []
-    
-    return []
+
+        if r.status_code == 429:
+            log_print("⚠  GNews: Rate limit hit, waiting 5s...")
+            time.sleep(5)
+            r = requests.get(GNEWS_API_URL, params=params, timeout=10)
+
+        if r.status_code != 200:
+            log_print(f"⚠  GNews error (HTTP {r.status_code}): {r.text[:200]}")
+            return []
+
+        data = r.json()
+        articles = [
+            {
+                "title":       a.get("title", "").strip(),
+                "description": (a.get("description") or "").strip(),
+                "content":     (a.get("content") or "")[:600].strip(),
+                "source":      a.get("source", {}).get("name", "Unknown"),
+                "url":         a.get("url", ""),
+                "published":   a.get("publishedAt", ""),
+            }
+            for a in data.get("articles", [])
+            if a.get("title") and "[Removed]" not in a.get("title", "")
+        ]
+        return articles
+
+    except requests.RequestException as e:
+        log_print(f"⚠  Network error fetching '{query}': {e}")
+        return []
+
 
 def _deduplicate(articles: list[dict]) -> list[dict]:
     seen, unique = set(), []
@@ -122,12 +109,12 @@ def fetch_news_node(state: AgentState, news_api_key: str) -> AgentState:
 
     all_articles: list[dict] = []
     for i, q in enumerate(queries):
-        log_print(f" Fetching: '{q}' ({i+1}/{len(queries)})")
+        log_print(f"Fetching: '{q}' ({i+1}/{len(queries)})")
         articles = _fetch_for_query(q, news_api_key)
         all_articles.extend(articles)
-        if i < len(queries) - 1:  # Don't sleep after last query
-            log_print(f"  Throttling for {1.5}s (NewsAPI rate limit protection)...")
-            time.sleep(1.5)   # Increased throttle to protect against rate limits
+        log_print(f"  → {len(articles)} articles found")
+        if i < len(queries) - 1:
+            time.sleep(1)   # light throttle between queries
 
     unique = _deduplicate(all_articles)
     print(f"\n  Fetched {len(all_articles)} articles → {len(unique)} unique after dedup")
