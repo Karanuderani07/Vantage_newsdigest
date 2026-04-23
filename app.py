@@ -16,16 +16,21 @@ st.set_page_config(
 # ── 2. Load Environment & Keys ─────────────────────────────────
 load_dotenv()
 
+# Inject Streamlit secrets into os.environ BEFORE any other imports
+# This ensures modules that use os.getenv() internally also work on Streamlit Cloud
+try:
+    os.environ["GROQ_API_KEY"] = st.secrets["GROQ_API_KEY"]
+    os.environ["NEWS_API_KEY"] = st.secrets["NEWS_API_KEY"]
+except Exception:
+    pass  # Running locally — dotenv already loaded them above
+
 def get_key(name):
-    try:
-        return st.secrets[name]   # Streamlit Cloud
-    except Exception:
-        return os.getenv(name)    # Local fallback
+    return os.environ.get(name)  # Now always works, both local and cloud
 
 GROQ_KEY = get_key("GROQ_API_KEY")
 NEWS_KEY = get_key("NEWS_API_KEY")
 
-# ── 3. Imports ───────────────────────────────────────────────
+# ── 3. Imports (AFTER keys are in os.environ) ──────────────────
 from main import run, build_graph
 from state import AgentState
 from utils import get_client
@@ -304,11 +309,7 @@ if generate and topic.strip():
         del st.session_state["state"]
 
     if not GROQ_KEY or not NEWS_KEY:
-        st.error("Protocol Error: Access Keys Missing.")
-        st.stop()
-
-    if not GROQ_KEY or not NEWS_KEY:
-        st.error("Protocol Error: Access Keys Missing.")
+        st.error("Protocol Error: Access Keys Missing. Check Streamlit secrets.")
         st.stop()
 
     with st.status("🖋️ Planning Executive Briefing...", expanded=True) as status:
@@ -342,6 +343,8 @@ if generate and topic.strip():
             
         except Exception as e:
             st.error(f"Execution Error: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc(), language="python")
             st.stop()
 
 # ── 8. Results Dashboard ──────────────────────────────────────
@@ -444,7 +447,6 @@ if "state" in st.session_state:
             cluster_sizes = [len(c) for c in clusters]
             labels = state.get("cluster_labels", [])
             
-            # Create a nice chart
             df = pd.DataFrame({
                 'Cluster': [f"{i+1}. {label[:20]}..." for i, label in enumerate(labels)],
                 'Articles': cluster_sizes
@@ -477,14 +479,12 @@ if "state" in st.session_state:
         if not clusters:
             st.info("No cluster data available.")
         else:
-            # Cluster Distribution Visualization
             cluster_sizes = [len(c) for c in clusters]
             
             col_chart, col_stats = st.columns([2, 1])
             
             with col_chart:
                 st.markdown("#### 📊 Article Distribution")
-                import pandas as pd
                 df = pd.DataFrame({
                     'Cluster': [f"{i+1}. {label[:18]}..." for i, label in enumerate(labels)],
                     'Count': cluster_sizes
@@ -503,7 +503,6 @@ if "state" in st.session_state:
             
             st.markdown("<div class='tab-divider'></div>", unsafe_allow_html=True)
             
-            # Detailed Cluster Views
             st.markdown("#### 🏷️ Thematic Breakdown")
             for i, (cluster, label) in enumerate(zip(clusters, labels), 1):
                 with st.expander(f"🏷️ **Cluster {i}: {label}** ({len(cluster)} articles)", expanded=(i == 1)):
@@ -528,13 +527,11 @@ if "state" in st.session_state:
         if not articles:
             st.info("No source materials available.")
         else:
-            # Filter and search
             col_filter1, col_filter2, col_filter3 = st.columns([2, 1, 1])
             
             with col_filter2:
                 articles_per_page = st.selectbox("Per page", [5, 10, 20], index=1, label_visibility="collapsed")
             
-            # Paginate
             total_pages = (len(articles) + articles_per_page - 1) // articles_per_page
             
             with col_filter3:
@@ -567,7 +564,6 @@ if "state" in st.session_state:
         else:
             st.markdown("#### 📋 Pipeline Steps")
             for idx, log in enumerate(logs, 1):
-                # Color-code different log types
                 if "fetch" in log.lower():
                     emoji = "🌐"
                     color = "#00d4ff"
