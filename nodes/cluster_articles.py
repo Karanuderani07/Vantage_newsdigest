@@ -17,6 +17,11 @@ def _filter_best(topic: str, articles: list[dict], max_keep: int = 7) -> list[di
     if not articles:
         return []
 
+    # If we have few enough articles, keep them all
+    if len(articles) <= max_keep:
+        log_print(f"  ℹ️  Keeping all {len(articles)} articles (less than max {max_keep})")
+        return articles
+
     summaries = "\n".join(
         f"{i}: [{a['source']}] {a['title']} | {a['description'][:120]}"
         for i, a in enumerate(articles[:20])
@@ -29,14 +34,22 @@ def _filter_best(topic: str, articles: list[dict], max_keep: int = 7) -> list[di
         f'Return ONLY valid JSON: {{"selected": [0,1,2,3,4,5,6]}} — indices only, no explanation.'
     )
 
-    raw      = llm(system, f"Topic: {topic}\n\nArticles:\n{summaries}", json_mode=True)
-    # FIX: Cast indices to int because LLMs sometimes return strings
     try:
-        selected = [int(i) for i in json.loads(raw).get("selected", [])]
-    except (ValueError, TypeError):
-        selected = list(range(min(max_keep, len(articles))))
+        raw = llm(system, f"Topic: {topic}\n\nArticles:\n{summaries}", json_mode=True)
+        data = json.loads(raw)
+        selected = [int(i) for i in data.get("selected", [])]
         
-    return [articles[i] for i in selected if i < len(articles)]
+        if selected:
+            result = [articles[i] for i in selected if i < len(articles)]
+            if result:
+                log_print(f"  ℹ️  LLM selected {len(result)} articles")
+                return result
+    except Exception as e:
+        log_print(f"  ⚠️  Filter error: {type(e).__name__}. Using fallback.")
+    
+    # Fallback: pick first max_keep articles
+    log_print(f"  ℹ️  Using fallback: first {max_keep} articles")
+    return articles[:max_keep]
 
 
 def _cluster_articles(topic: str, articles: list[dict]) -> tuple[list[list[dict]], list[str]]:
@@ -58,15 +71,18 @@ def _cluster_articles(topic: str, articles: list[dict]) -> tuple[list[list[dict]
         "\nNo explanation, no markdown."
     )
 
-    raw  = llm(system, f"Topic: {topic}\n\nArticles:\n{titles_list}", json_mode=True)
-    data = json.loads(raw)
+    try:
+        raw  = llm(system, f"Topic: {topic}\n\nArticles:\n{titles_list}", json_mode=True)
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        log_print(f"⚠  Cluster JSON parse error: {e}. Using simple grouping.")
+        data = {"clusters": [[i] for i in range(len(articles))], "labels": []}
 
     idx_clusters = data.get("clusters", [list(range(len(articles)))])
-    labels       = data.get("labels", [f"Section {i+1}" for i in range(len(idx_clusters))])
+    labels       = data.get("labels", [])
 
     clusters = []
     for group in idx_clusters:
-        # FIX: Cast index 'i' to int to avoid TypeError
         cluster = []
         for i in group:
             try:
@@ -79,10 +95,15 @@ def _cluster_articles(topic: str, articles: list[dict]) -> tuple[list[list[dict]
         if cluster:
             clusters.append(cluster)
 
-    # pad / trim labels to match clusters
+    # Ensure we have labels for all clusters
     while len(labels) < len(clusters):
         labels.append(f"Section {len(labels)+1}")
     labels = labels[: len(clusters)]
+
+    # Fallback: if no clusters formed, create one per article
+    if not clusters and articles:
+        clusters = [[a] for a in articles]
+        labels = [f"Article {i+1}" for i in range(len(articles))]
 
     return clusters, labels
 
