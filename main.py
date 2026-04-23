@@ -17,23 +17,29 @@ from langgraph.graph import StateGraph, END
 
 from state import AgentState
 from utils import get_client, log_print
-from nodes.fetch_news      import fetch_news_node
-from nodes.cluster_articles  import cluster_articles_node
+from nodes.fetch_news         import fetch_news_node
+from nodes.cluster_articles   import cluster_articles_node
 from nodes.summarize_clusters import summarize_clusters_node
 from nodes.assemble_briefing  import assemble_briefing_node
 
 load_dotenv()
 
-# ── Keys ─────────────────────────────────────────────────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
+# ── Keys are read at CALL TIME, not module-load time ──────────
+# (Module-level reads happen before app.py injects st.secrets
+#  into os.environ, so they always return empty strings on cloud)
+
+def _get_groq_key() -> str:
+    return os.environ.get("GROQ_API_KEY", "")
+
+def _get_news_key() -> str:
+    return os.environ.get("NEWS_API_KEY", "")
 
 
-def _validate_keys():
+def _validate_keys(groq_key: str, news_key: str):
     errors = []
-    if not GROQ_API_KEY or "YOUR" in GROQ_API_KEY:
+    if not groq_key or "YOUR" in groq_key:
         errors.append("GROQ_API_KEY missing — get a free key at https://console.groq.com")
-    if not NEWS_API_KEY or "YOUR" in NEWS_API_KEY:
+    if not news_key or "YOUR" in news_key:
         errors.append("NEWS_API_KEY missing — get a free key at https://newsapi.org")
     if errors:
         for e in errors:
@@ -68,11 +74,15 @@ def build_graph(news_api_key: str) -> object:
 
 def run(topic: str) -> AgentState:
     """Run the full pipeline for a given topic and return the final state."""
-    _validate_keys()
-    get_client(GROQ_API_KEY)  # initialise the shared Groq client
+    # Read keys at call time — os.environ is fully populated by now
+    groq_key = _get_groq_key()
+    news_key = _get_news_key()
+
+    _validate_keys(groq_key, news_key)
+    get_client(groq_key)  # initialise the shared Groq client
 
     _print_banner(topic)
-    graph = build_graph(NEWS_API_KEY)
+    graph = build_graph(news_key)
 
     initial_state: AgentState = {
         "topic":             topic,
